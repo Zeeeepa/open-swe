@@ -9,6 +9,10 @@ import { architectTool } from './architect.js';
 import { enhancedShellTool, shellSessionInfoTool } from './enhanced-shell.js';
 import { contextAnalyzerTool } from './context-analyzer.js';
 import { mcpServerTool, mcpToolTool, mcpResourceTool } from './mcp-integration.js';
+import { cliInterfaceTool } from '../cli/interface.js';
+import { commandProcessorTool } from '../cli/commands.js';
+import { configManagerTool } from '../cli/config.js';
+import { userInteractionTool } from '../cli/user-interaction.js';
 import { globalPermissionManager } from '../utils/permissions.js';
 import { globalShellSessionManager } from '../utils/shell-session.js';
 import { globalMCPManager } from '../utils/mcp-foundation.js';
@@ -16,7 +20,7 @@ import { globalMCPManager } from '../utils/mcp-foundation.js';
 export interface ToolInfo {
   name: string;
   description: string;
-  category: 'analysis' | 'execution' | 'context' | 'mcp' | 'session';
+  category: 'analysis' | 'execution' | 'context' | 'mcp' | 'session' | 'cli' | 'interaction';
   tool: any;
   permissions: string[];
   dependencies: string[];
@@ -112,6 +116,43 @@ export class AnonKodeToolRegistry {
       tool: mcpResourceTool,
       permissions: ['mcp_connect'],
       dependencies: ['mcp_foundation'],
+    });
+
+    // CLI tools
+    this.registerTool({
+      name: 'cli_interface',
+      description: 'Process anon-kode style CLI commands and integrate with LangGraph workflows',
+      category: 'cli',
+      tool: cliInterfaceTool,
+      permissions: ['shell_execute', 'file_read'],
+      dependencies: ['shell_session', 'context_analyzer', 'architect'],
+    });
+
+    this.registerTool({
+      name: 'command_processor',
+      description: 'Process CLI commands with intent analysis and routing',
+      category: 'cli',
+      tool: commandProcessorTool,
+      permissions: ['shell_execute', 'file_read'],
+      dependencies: ['shell_session', 'context_analyzer'],
+    });
+
+    this.registerTool({
+      name: 'config_manager',
+      description: 'Manage anon-kode configuration including AI providers and preferences',
+      category: 'cli',
+      tool: configManagerTool,
+      permissions: ['file_read', 'file_write'],
+      dependencies: [],
+    });
+
+    this.registerTool({
+      name: 'user_interaction',
+      description: 'Handle user interactions with anon-kode style patterns and responses',
+      category: 'interaction',
+      tool: userInteractionTool,
+      permissions: [],
+      dependencies: [],
     });
   }
 
@@ -362,4 +403,3 @@ export class AnonKodeToolRegistry {
 
 // Global tool registry instance
 export const anonKodeRegistry = new AnonKodeToolRegistry();
-
