@@ -28,6 +28,38 @@ export interface ShellResult {
   timestamp: number;
   workdir: string;
   success: boolean;
+  // Enhanced error context
+  errorContext?: {
+    stackTrace?: string;
+    errorType?: string;
+    sourceFile?: string;
+    lineNumber?: number;
+    relatedFiles?: string[];
+    suggestedFixes?: string[];
+    errorPattern?: string;
+    contextLines?: Array<{
+      file: string;
+      lineNumber: number;
+      content: string;
+      isErrorLine: boolean;
+    }>;
+  };
+  // Performance metrics
+  performance?: {
+    memoryUsage?: number;
+    cpuUsage?: number;
+    diskIO?: number;
+    networkIO?: number;
+  };
+  // Environment context
+  environment?: {
+    nodeVersion?: string;
+    npmVersion?: string;
+    gitBranch?: string;
+    gitCommit?: string;
+    workingDirectory?: string;
+    environmentVars?: Record<string, string>;
+  };
 }
 
 export interface ShellSessionConfig {
@@ -77,7 +109,7 @@ export class ShellSession {
   }
 
   /**
-   * Execute a command with sophisticated error handling and correlation tracking
+   * Execute a command with sophisticated error handling, context analysis, and correlation tracking
    */
   async execute(command: ShellCommand): Promise<ShellResult> {
     const correlationId = randomUUID();
@@ -108,6 +140,14 @@ export class ShellSession {
         success: result.exitCode === 0,
       };
 
+      // Enhance with error context analysis
+      if (!shellResult.success) {
+        shellResult.errorContext = await this.analyzeError(shellResult, commandStr);
+      }
+
+      // Enhance with environment context
+      shellResult.environment = await this.gatherEnvironmentContext(workdir);
+
       // Add to history
       this.addToHistory(shellResult);
 
@@ -116,6 +156,7 @@ export class ShellSession {
         exitCode: result.exitCode,
         duration: shellResult.duration,
         success: shellResult.success,
+        hasErrorContext: !!shellResult.errorContext,
       });
 
       return shellResult;
@@ -356,6 +397,382 @@ echo $? > "${exitCodePath}"
   }
 
   /**
+   * Analyze error context with sophisticated debugging information
+   */
+  private async analyzeError(result: ShellResult, command: string): Promise<ShellResult['errorContext']> {
+    const errorContext: ShellResult['errorContext'] = {
+      errorPattern: this.identifyErrorPattern(result.stderr, result.stdout),
+      suggestedFixes: [],
+      relatedFiles: [],
+      contextLines: [],
+    };
+
+    try {
+      // Parse stack traces for JavaScript/TypeScript errors
+      if (result.stderr.includes('Error:') || result.stderr.includes('TypeError:')) {
+        const stackTrace = this.extractStackTrace(result.stderr);
+        if (stackTrace) {
+          errorContext.stackTrace = stackTrace;
+          errorContext.errorType = this.extractErrorType(result.stderr);
+          
+          // Extract source file and line number
+          const sourceInfo = this.extractSourceInfo(stackTrace);
+          if (sourceInfo) {
+            errorContext.sourceFile = sourceInfo.file;
+            errorContext.lineNumber = sourceInfo.line;
+            
+            // Get context lines around the error
+            errorContext.contextLines = await this.getErrorContextLines(
+              sourceInfo.file, 
+              sourceInfo.line, 
+              result.workdir
+            );
+          }
+        }
+      }
+
+      // Analyze compilation errors
+      if (command.includes('tsc') || command.includes('build')) {
+        errorContext.relatedFiles = this.extractRelatedFiles(result.stderr);
+        errorContext.suggestedFixes = this.generateCompilationFixes(result.stderr);
+      }
+
+      // Analyze test failures
+      if (command.includes('test') || command.includes('jest') || command.includes('npm test')) {
+        errorContext.suggestedFixes = this.generateTestFixes(result.stderr, result.stdout);
+        errorContext.relatedFiles = this.extractTestFiles(result.stderr);
+      }
+
+      // Analyze dependency errors
+      if (command.includes('npm') || command.includes('yarn') || command.includes('pnpm')) {
+        errorContext.suggestedFixes = this.generateDependencyFixes(result.stderr);
+      }
+
+      // Analyze git errors
+      if (command.includes('git')) {
+        errorContext.suggestedFixes = this.generateGitFixes(result.stderr);
+      }
+
+    } catch (error) {
+      console.warn('Error during error analysis', {
+        correlationId: result.correlationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return errorContext;
+  }
+
+  /**
+   * Gather comprehensive environment context
+   */
+  private async gatherEnvironmentContext(workdir: string): Promise<ShellResult['environment']> {
+    const environment: ShellResult['environment'] = {
+      workingDirectory: workdir,
+      environmentVars: {},
+    };
+
+    try {
+      // Get Node.js version
+      const nodeResult = await this.execute({ command: ['node', '--version'], timeout: 5 });
+      if (nodeResult.success) {
+        environment.nodeVersion = nodeResult.stdout.trim();
+      }
+
+      // Get npm version
+      const npmResult = await this.execute({ command: ['npm', '--version'], timeout: 5 });
+      if (npmResult.success) {
+        environment.npmVersion = npmResult.stdout.trim();
+      }
+
+      // Get git branch
+      const branchResult = await this.execute({ 
+        command: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], 
+        workdir,
+        timeout: 5 
+      });
+      if (branchResult.success) {
+        environment.gitBranch = branchResult.stdout.trim();
+      }
+
+      // Get git commit
+      const commitResult = await this.execute({ 
+        command: ['git', 'rev-parse', 'HEAD'], 
+        workdir,
+        timeout: 5 
+      });
+      if (commitResult.success) {
+        environment.gitCommit = commitResult.stdout.trim().substring(0, 8);
+      }
+
+      // Capture relevant environment variables
+      const relevantEnvVars = ['NODE_ENV', 'PATH', 'HOME', 'USER', 'SHELL'];
+      for (const envVar of relevantEnvVars) {
+        if (process.env[envVar]) {
+          environment.environmentVars![envVar] = process.env[envVar]!;
+        }
+      }
+
+    } catch (error) {
+      console.warn('Error gathering environment context', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return environment;
+  }
+
+  /**
+   * Identify error patterns for better categorization
+   */
+  private identifyErrorPattern(stderr: string, stdout: string): string {
+    const combinedOutput = stderr + stdout;
+    
+    // Common error patterns
+    if (combinedOutput.includes('ENOENT')) return 'FILE_NOT_FOUND';
+    if (combinedOutput.includes('EACCES')) return 'PERMISSION_DENIED';
+    if (combinedOutput.includes('EADDRINUSE')) return 'PORT_IN_USE';
+    if (combinedOutput.includes('MODULE_NOT_FOUND')) return 'MISSING_DEPENDENCY';
+    if (combinedOutput.includes('SyntaxError')) return 'SYNTAX_ERROR';
+    if (combinedOutput.includes('TypeError')) return 'TYPE_ERROR';
+    if (combinedOutput.includes('ReferenceError')) return 'REFERENCE_ERROR';
+    if (combinedOutput.includes('Cannot resolve')) return 'RESOLUTION_ERROR';
+    if (combinedOutput.includes('Test failed')) return 'TEST_FAILURE';
+    if (combinedOutput.includes('Build failed')) return 'BUILD_FAILURE';
+    if (combinedOutput.includes('fatal:')) return 'GIT_ERROR';
+    
+    return 'UNKNOWN_ERROR';
+  }
+
+  /**
+   * Extract stack trace from error output
+   */
+  private extractStackTrace(stderr: string): string | undefined {
+    const lines = stderr.split('\n');
+    const stackStart = lines.findIndex(line => 
+      line.includes('Error:') || line.includes('TypeError:') || line.includes('ReferenceError:')
+    );
+    
+    if (stackStart === -1) return undefined;
+    
+    const stackLines = [];
+    for (let i = stackStart; i < lines.length && i < stackStart + 10; i++) {
+      const line = lines[i].trim();
+      if (line && (line.includes('at ') || line.includes('Error:') || line.includes('TypeError:'))) {
+        stackLines.push(line);
+      } else if (stackLines.length > 0) {
+        break;
+      }
+    }
+    
+    return stackLines.length > 0 ? stackLines.join('\n') : undefined;
+  }
+
+  /**
+   * Extract error type from stderr
+   */
+  private extractErrorType(stderr: string): string | undefined {
+    const errorTypeMatch = stderr.match(/(Error|TypeError|ReferenceError|SyntaxError):/);
+    return errorTypeMatch ? errorTypeMatch[1] : undefined;
+  }
+
+  /**
+   * Extract source file and line number from stack trace
+   */
+  private extractSourceInfo(stackTrace: string): { file: string; line: number } | undefined {
+    // Match patterns like "at /path/to/file.js:123:45" or "(/path/to/file.js:123:45)"
+    const sourceMatch = stackTrace.match(/(?:at\s+)?(?:\()?([^()]+):(\d+):(\d+)\)?/);
+    if (sourceMatch) {
+      return {
+        file: sourceMatch[1],
+        line: parseInt(sourceMatch[2], 10),
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * Get context lines around an error location
+   */
+  private async getErrorContextLines(
+    filePath: string, 
+    lineNumber: number, 
+    workdir: string
+  ): Promise<Array<{ file: string; lineNumber: number; content: string; isErrorLine: boolean }>> {
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join, isAbsolute } = await import('path');
+      
+      const fullPath = isAbsolute(filePath) ? filePath : join(workdir, filePath);
+      const content = await readFile(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      
+      const contextLines = [];
+      const startLine = Math.max(0, lineNumber - 6);
+      const endLine = Math.min(lines.length - 1, lineNumber + 4);
+      
+      for (let i = startLine; i <= endLine; i++) {
+        contextLines.push({
+          file: filePath,
+          lineNumber: i + 1,
+          content: lines[i] || '',
+          isErrorLine: i + 1 === lineNumber,
+        });
+      }
+      
+      return contextLines;
+    } catch (error) {
+      console.warn('Failed to get error context lines', {
+        filePath,
+        lineNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Extract related files from error output
+   */
+  private extractRelatedFiles(stderr: string): string[] {
+    const files = new Set<string>();
+    
+    // Match file paths in error messages
+    const fileMatches = stderr.match(/(?:\/[^\s:]+\.[a-zA-Z]+|[a-zA-Z0-9_-]+\.[a-zA-Z]+)/g);
+    if (fileMatches) {
+      fileMatches.forEach(file => {
+        if (file.includes('.js') || file.includes('.ts') || file.includes('.json')) {
+          files.add(file);
+        }
+      });
+    }
+    
+    return Array.from(files);
+  }
+
+  /**
+   * Generate compilation-specific fixes
+   */
+  private generateCompilationFixes(stderr: string): string[] {
+    const fixes = [];
+    
+    if (stderr.includes('Cannot find module')) {
+      fixes.push('Install missing dependencies with npm install or yarn install');
+      fixes.push('Check if the module path is correct');
+      fixes.push('Verify the module is listed in package.json');
+    }
+    
+    if (stderr.includes('Type \'') && stderr.includes('\' is not assignable to type')) {
+      fixes.push('Check type definitions and ensure compatibility');
+      fixes.push('Add explicit type casting if necessary');
+      fixes.push('Update interface definitions');
+    }
+    
+    if (stderr.includes('Property \'') && stderr.includes('\' does not exist')) {
+      fixes.push('Check if the property name is spelled correctly');
+      fixes.push('Verify the object interface includes this property');
+      fixes.push('Add the missing property to the type definition');
+    }
+    
+    return fixes;
+  }
+
+  /**
+   * Generate test-specific fixes
+   */
+  private generateTestFixes(stderr: string, stdout: string): string[] {
+    const fixes = [];
+    const combinedOutput = stderr + stdout;
+    
+    if (combinedOutput.includes('Test suite failed to run')) {
+      fixes.push('Check test file syntax and imports');
+      fixes.push('Ensure all test dependencies are installed');
+      fixes.push('Verify test configuration files');
+    }
+    
+    if (combinedOutput.includes('expect(')) {
+      fixes.push('Review test assertions and expected values');
+      fixes.push('Check if the test data setup is correct');
+      fixes.push('Verify mock implementations');
+    }
+    
+    if (combinedOutput.includes('timeout')) {
+      fixes.push('Increase test timeout values');
+      fixes.push('Check for infinite loops or blocking operations');
+      fixes.push('Optimize test performance');
+    }
+    
+    return fixes;
+  }
+
+  /**
+   * Generate dependency-specific fixes
+   */
+  private generateDependencyFixes(stderr: string): string[] {
+    const fixes = [];
+    
+    if (stderr.includes('ERESOLVE')) {
+      fixes.push('Try npm install --legacy-peer-deps');
+      fixes.push('Update conflicting dependencies');
+      fixes.push('Check for version compatibility issues');
+    }
+    
+    if (stderr.includes('ENOENT')) {
+      fixes.push('Ensure the package.json file exists');
+      fixes.push('Check if you\'re in the correct directory');
+      fixes.push('Verify file permissions');
+    }
+    
+    if (stderr.includes('permission denied')) {
+      fixes.push('Try running with sudo (if appropriate)');
+      fixes.push('Check file and directory permissions');
+      fixes.push('Use npm config to set proper permissions');
+    }
+    
+    return fixes;
+  }
+
+  /**
+   * Generate git-specific fixes
+   */
+  private generateGitFixes(stderr: string): string[] {
+    const fixes = [];
+    
+    if (stderr.includes('not a git repository')) {
+      fixes.push('Initialize git repository with git init');
+      fixes.push('Check if you\'re in the correct directory');
+    }
+    
+    if (stderr.includes('merge conflict')) {
+      fixes.push('Resolve merge conflicts in affected files');
+      fixes.push('Use git status to see conflicted files');
+      fixes.push('Add resolved files with git add');
+    }
+    
+    if (stderr.includes('remote origin already exists')) {
+      fixes.push('Remove existing remote with git remote remove origin');
+      fixes.push('Or update remote URL with git remote set-url origin');
+    }
+    
+    return fixes;
+  }
+
+  /**
+   * Extract test files from error output
+   */
+  private extractTestFiles(stderr: string): string[] {
+    const files = new Set<string>();
+    
+    // Match test file patterns
+    const testMatches = stderr.match(/(?:\/[^\s:]*\.(?:test|spec)\.[a-zA-Z]+|[a-zA-Z0-9_-]+\.(?:test|spec)\.[a-zA-Z]+)/g);
+    if (testMatches) {
+      testMatches.forEach(file => files.add(file));
+    }
+    
+    return Array.from(files);
+  }
+
+  /**
    * Cleanup session resources
    */
   async cleanup(): Promise<void> {
@@ -454,4 +871,3 @@ export class ShellSessionManager {
 
 // Global session manager
 export const globalShellSessionManager = new ShellSessionManager();
-
