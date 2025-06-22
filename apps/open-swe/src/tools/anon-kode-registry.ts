@@ -13,6 +13,7 @@ import { cliInterfaceTool } from '../cli/interface.js';
 import { commandProcessorTool } from '../cli/commands.js';
 import { configManagerTool } from '../cli/config.js';
 import { userInteractionTool } from '../cli/user-interaction.js';
+import { flowAwareCLITool } from '../cli/flow-aware-interface.js';
 import { globalPermissionManager } from '../utils/permissions.js';
 import { globalShellSessionManager } from '../utils/shell-session.js';
 import { globalMCPManager } from '../utils/mcp-foundation.js';
@@ -153,6 +154,16 @@ export class AnonKodeToolRegistry {
       tool: userInteractionTool,
       permissions: [],
       dependencies: [],
+    });
+
+    // Flow-aware CLI (corrected implementation)
+    this.registerTool({
+      name: 'flow_aware_cli',
+      description: 'Process CLI commands that work WITH open-swe\'s classification and routing system',
+      category: 'cli',
+      tool: flowAwareCLITool,
+      permissions: ['shell_execute', 'file_read'],
+      dependencies: ['shell_session', 'context_analyzer', 'classify_message'],
     });
   }
 
